@@ -1,14 +1,130 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
-import time
-from datetime import datetime
 import webbrowser
+import requests
+from flask import Flask, request
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import threading
+import time
+import json
+from obtener_token import obtener_token
 
+# =====================
+# Configuración Global
+# =====================
+URL_WEBHOOK = "https://0b55-143-255-41-62.ngrok-free.app/webhook"
+USER_ID = "kCTmosZegBbnHQBnZw8woqGTGN12"
+WEBHOOK_REFRESH_INTERVAL = 300  # 5 minutos en segundos
+
+# Configuración del servidor Flask para webhooks
+app = Flask(__name__)
+
+# =====================
+# Funciones del Webhook
+# =====================
+def registrar_webhook(token):
+    """Registra el webhook con el token actual"""
+    url = f"https://api.weetrust.mx/webhooks?url={URL_WEBHOOK}&type=signDocument"
+    headers = {
+        "accept": "application/json",
+        "user-id": USER_ID,
+        "token": token,
+        "content-type": "application/json"
+    }
+    
+    try:
+        response = requests.post(url, headers=headers)
+        if response.status_code == 200:
+            print("Webhook registrado exitosamente")
+            return True
+        else:
+            print(f"Error al registrar webhook: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"Error de conexión al registrar webhook: {e}")
+        return False
+
+def mantener_webhook_activo():
+    """Hilo que mantiene actualizado el webhook cada 5 minutos"""
+    while True:
+        try:
+            token = obtener_token()
+            if token:
+                if registrar_webhook(token):
+                    print("Webhook actualizado correctamente")
+                else:
+                    print("Error al actualizar webhook")
+            else:
+                print("No se pudo obtener el token para actualizar webhook")
+        except Exception as e:
+            print(f"Error en el hilo de actualización de webhook: {e}")
+        
+        time.sleep(WEBHOOK_REFRESH_INTERVAL)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    print("Datos recibidos del webhook:", data)
+
+    if data.get("type") == "signDocument":
+        signer_email = data.get("data", {}).get("email") 
+        if signer_email:
+            guardar_firmante(signer_email)
+            send_email_notification(signer_email)
+            # Actualizar la interfaz si está abierta
+            if hasattr(VerificarPanel, 'instance'):
+                VerificarPanel.instance.after(0, VerificarPanel.instance.actualizar_lista)
+
+    return "OK", 200
+
+def guardar_firmante(correo):
+    """Guarda el correo del firmante en el archivo"""
+    with open("firmantes.txt", "a") as f:
+        f.write(correo + "\n")
+    print(f"Correo guardado: {correo}")
+
+def send_email_notification(correo):
+    """Envía notificación por email cuando alguien firma"""
+    sender_email = "picejmv@gmail.com"
+    receiver_email = "57211000079@utrng.edu.mx"
+    password = "ymyb ifff gtae bnjr"
+
+    subject = "Contrato firmado"
+    body = f"El siguiente correo ha firmado el contrato: {correo}"
+
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = receiver_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, message.as_string())
+        server.quit()
+        print("Correo enviado con éxito 📧")
+    except Exception as e:
+        print(f"Error al enviar correo: {e}")
+
+def run_flask():
+    """Inicia el servidor Flask para recibir webhooks"""
+    app.run(host='0.0.0.0', port=5000)
+
+# =====================
+# Interfaz Gráfica
+# =====================
 class VerificarPanel(tk.Frame):
+    instance = None
+    
     def __init__(self, parent):
         super().__init__(parent, bg='white')
         self.parent = parent
+        VerificarPanel.instance = self
         
         # Diccionario con los nombres específicos
         self.nombres = {
@@ -21,6 +137,14 @@ class VerificarPanel(tk.Frame):
         
         self.setup_ui()
         self.mostrar_mensaje_inicial()
+        
+        # Iniciar el hilo para mantener el webhook activo
+        self.iniciar_webhook_automatico()
+
+    def iniciar_webhook_automatico(self):
+        """Inicia el hilo que mantiene el webhook actualizado"""
+        webhook_thread = threading.Thread(target=mantener_webhook_activo, daemon=True)
+        webhook_thread.start()
 
     def setup_ui(self):
         # Configuración de la interfaz
@@ -129,7 +253,7 @@ class VerificarPanel(tk.Frame):
         self.progress['value'] = 0
         self.actualizar_mensaje("Verificando firmantes...", "blue")
         
-        # Simular carga (en una aplicación real, aquí iría tu lógica de actualización)
+        # Simular carga
         self.after(100, lambda: self.progress.step(20))
         self.after(200, lambda: self.progress.step(40))
         self.after(300, lambda: self.progress.step(60))
@@ -141,18 +265,12 @@ class VerificarPanel(tk.Frame):
         self.progress['value'] = 100
         
         try:
-            # Aquí va tu lógica de actualización real
             firmantes_encontrados = self.actualizar_lista()
             
             if not firmantes_encontrados:
                 self.actualizar_mensaje("No hay firmantes registrados. Favor de revisar en WeeTrust", "red")
             else:
                 self.actualizar_mensaje(f"Se encontraron {firmantes_encontrados} firmante(s)", "green")
-                
-            # Simular un error aleatorio (para demostración)
-            import random
-            if random.random() < 0.2:  # 20% de probabilidad de error
-                raise Exception("Error de conexión con WeeTrust")
                 
         except Exception as e:
             self.actualizar_mensaje(f"Advertencia: {str(e)}. Favor de compilar datos", "red")
@@ -162,12 +280,11 @@ class VerificarPanel(tk.Frame):
             self.btn_actualizar.config(state='normal')
 
     def actualizar_lista(self):
-        """Carga los firmantes desde el archivo con los nombres específicos"""
+        """Carga los firmantes desde el archivo"""
         self.limpiar_lista()
         firmantes_encontrados = 0
         
         try:
-            # Leer el archivo de firmantes
             if not os.path.exists("firmantes.txt"):
                 self.tree.insert('', 'end', values=("No se encontró el archivo de firmantes", "", ""))
                 return 0
@@ -179,12 +296,10 @@ class VerificarPanel(tk.Frame):
                 self.tree.insert('', 'end', values=("No hay firmantes registrados", "", ""))
                 return 0
             else:
-                # Contar cuántas veces ha firmado cada persona
                 conteo = {}
                 for correo in correos:
                     conteo[correo] = conteo.get(correo, 0) + 1
                 
-                # Agregar firmantes a la lista con los nombres específicos
                 for correo, veces in conteo.items():
                     nombre = self.nombres.get(correo, "Nombre no registrado")
                     self.tree.insert('', 'end', values=(correo, nombre, veces))
@@ -210,19 +325,27 @@ class MainApp(tk.Tk):
         self.verificar_panel = VerificarPanel(self)
         self.verificar_panel.pack(fill='both', expand=True)
 
+# =====================
+# Iniciar Aplicación
+# =====================
 if __name__ == "__main__":
-    # Crear archivo de ejemplo con los correos que proporcionaste
-    with open("firmantes.txt", "w") as f:
-        f.write("clatempa921@gmail.com\n")
-        f.write("navar4077@gmail.com\n")
-        f.write("picejmv@gmail.com\n")
-        f.write("picejmv@gmail.com\n")
-        f.write("picejmv@gmail.com\n")
-        f.write("57231900112@utmg.edu.mx\n")
-        f.write("carlosarturo756z106@gmail.com\n")
-        f.write("navar4077@gmail.com\n")
-        f.write("carlosarturo756z106@gmail.com\n")
+    # Crear archivo de ejemplo si no existe
+    if not os.path.exists("firmantes.txt"):
+        with open("firmantes.txt", "w") as f:
+            f.write("clatempa921@gmail.com\n")
+            f.write("navar4077@gmail.com\n")
+            f.write("picejmv@gmail.com\n")
+            f.write("picejmv@gmail.com\n")
+            f.write("picejmv@gmail.com\n")
+            f.write("57231900112@utmg.edu.mx\n")
+            f.write("carlosarturo756z106@gmail.com\n")
+            f.write("navar4077@gmail.com\n")
+            f.write("carlosarturo756z106@gmail.com\n")
     
-    # Iniciar la aplicación
+    # Iniciar servidor Flask en segundo plano
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Iniciar la aplicación Tkinter
     app = MainApp()
     app.mainloop()
