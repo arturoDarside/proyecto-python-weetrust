@@ -7,8 +7,8 @@ url = "https://api.weetrust.mx/access/token"
 # Encabezados de la solicitud
 headers = {
     "accept": "application/json",
-    "user-id": "".strip(),
-    "api-key": "".strip()
+    "user-id": "kCTmosZegBbnHQBnZw8woqGTGN12".strip(),
+    "api-key": "9aa050cbb1172eb0b970c5223c9cb7842bf9dd9e".strip()
 }
 
 # Realizar la solicitud POST
